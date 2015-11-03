@@ -20,6 +20,11 @@
  */
 #define SFE_CREATE_FLAG_NO_SEQ_CHECK 0x1
 					/* Indicates that we should not check sequence numbers */
+/*
+*/
+#ifndef SFE_SUPPORT_IPV6
+#define SFE_SUPPORT_IPV6
+#endif
 
 /*
  * IPv6 address structure

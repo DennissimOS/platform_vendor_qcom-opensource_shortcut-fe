@@ -25,8 +25,13 @@
  * of any packets is actually correct too.  Right now we're relying on
  * the bridge layer to do this sort of thing for us.
  */
-#define SFE_HOOK_ABOVE_BRIDGE 1
+#define SFE_HOOK_ABOVE_BRIDGE 0
+#define MAX_INTF_LEN 50
 
+
+#ifndef SFE_SUPPORT_IPV6
+#define SFE_SUPPORT_IPV6
+#endif
 /*
  * Debug output verbosity level.
  */

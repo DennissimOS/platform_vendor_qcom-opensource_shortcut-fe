@@ -248,6 +248,7 @@ struct sfe_ipv4_connection_match {
 	 */
 	uint64_t rx_packet_count64;	/* Number of packets RX'd */
 	uint64_t rx_byte_count64;	/* Number of bytes RX'd */
+	bool addEthMAC;	/*Add ethernet header if set*/
 };
 
 /*
@@ -281,6 +282,7 @@ struct sfe_ipv4_connection {
 					/* Pointer to the previous entry in the list of all connections */
 	uint32_t mark;			/* mark for outgoing packet */
 	uint32_t debug_read_seq;	/* sequence number for debug dump */
+	bool use_destMac;		/*Add ethernet header if set*/
 };
 
 /*
@@ -454,6 +456,12 @@ struct sfe_ipv4 {
 	struct kobject *sys_sfe_ipv4;	/* sysfs linkage */
 	int debug_dev;			/* Major number of the debug char device */
 	uint32_t debug_read_seq;	/* sequence number for debug dump */
+
+	/*
+	* Proc entry for Interface name
+	*/
+	char ipv4_iface[MAX_INTF_LEN];
+	int iface_length;
 };
 
 /*
@@ -1372,28 +1380,30 @@ static int sfe_ipv4_recv_udp(struct sfe_ipv4 *si, struct sk_buff *skb, struct ne
 	xmit_dev = cm->xmit_dev;
 	skb->dev = xmit_dev;
 
-	/*
-	 * Check to see if we need to write a header.
-	 */
-	if (likely(cm->flags & SFE_IPV4_CONNECTION_MATCH_FLAG_WRITE_L2_HDR)) {
-		if (unlikely(!(cm->flags & SFE_IPV4_CONNECTION_MATCH_FLAG_WRITE_FAST_ETH_HDR))) {
-			dev_hard_header(skb, xmit_dev, ETH_P_IP,
-					cm->xmit_dest_mac, cm->xmit_src_mac, len);
-		} else {
-			/*
-			 * For the simple case we write this really fast.
-			 */
-			struct sfe_ipv4_eth_hdr *eth = (struct sfe_ipv4_eth_hdr *)__skb_push(skb, ETH_HLEN);
-			eth->h_proto = htons(ETH_P_IP);
-			eth->h_dest[0] = cm->xmit_dest_mac[0];
-			eth->h_dest[1] = cm->xmit_dest_mac[1];
-			eth->h_dest[2] = cm->xmit_dest_mac[2];
-			eth->h_source[0] = cm->xmit_src_mac[0];
-			eth->h_source[1] = cm->xmit_src_mac[1];
-			eth->h_source[2] = cm->xmit_src_mac[2];
+	struct sfe_ipv4_connection *c = cm->connection;
+	if (likely(c->use_destMac || cm->addEthMAC)) {
+		/*
+		 * Check to see if we need to write a header.
+		 */
+		if (likely(cm->flags & SFE_IPV4_CONNECTION_MATCH_FLAG_WRITE_L2_HDR)) {
+			if (unlikely(!(cm->flags & SFE_IPV4_CONNECTION_MATCH_FLAG_WRITE_FAST_ETH_HDR))) {
+				dev_hard_header(skb, xmit_dev, ETH_P_IP,
+						cm->xmit_dest_mac, cm->xmit_src_mac, len);
+			} else {
+				/*
+				 * For the simple case we write this really fast.
+				 */
+				struct sfe_ipv4_eth_hdr *eth = (struct sfe_ipv4_eth_hdr *)__skb_push(skb, ETH_HLEN);
+				eth->h_proto = htons(ETH_P_IP);
+				eth->h_dest[0] = cm->xmit_dest_mac[0];
+				eth->h_dest[1] = cm->xmit_dest_mac[1];
+				eth->h_dest[2] = cm->xmit_dest_mac[2];
+				eth->h_source[0] = cm->xmit_src_mac[0];
+				eth->h_source[1] = cm->xmit_src_mac[1];
+				eth->h_source[2] = cm->xmit_src_mac[2];
+			}
 		}
 	}
-
 	/*
 	 * Mark outgoing packet.
 	 */
@@ -1910,28 +1920,30 @@ static int sfe_ipv4_recv_tcp(struct sfe_ipv4 *si, struct sk_buff *skb, struct ne
 	xmit_dev = cm->xmit_dev;
 	skb->dev = xmit_dev;
 
-	/*
-	 * Check to see if we need to write a header.
-	 */
-	if (likely(cm->flags & SFE_IPV4_CONNECTION_MATCH_FLAG_WRITE_L2_HDR)) {
-		if (unlikely(!(cm->flags & SFE_IPV4_CONNECTION_MATCH_FLAG_WRITE_FAST_ETH_HDR))) {
-			dev_hard_header(skb, xmit_dev, ETH_P_IP,
-					cm->xmit_dest_mac, cm->xmit_src_mac, len);
-		} else {
-			/*
-			 * For the simple case we write this really fast.
-			 */
-			struct sfe_ipv4_eth_hdr *eth = (struct sfe_ipv4_eth_hdr *)__skb_push(skb, ETH_HLEN);
-			eth->h_proto = htons(ETH_P_IP);
-			eth->h_dest[0] = cm->xmit_dest_mac[0];
-			eth->h_dest[1] = cm->xmit_dest_mac[1];
-			eth->h_dest[2] = cm->xmit_dest_mac[2];
-			eth->h_source[0] = cm->xmit_src_mac[0];
-			eth->h_source[1] = cm->xmit_src_mac[1];
-			eth->h_source[2] = cm->xmit_src_mac[2];
+	struct sfe_ipv4_connection *c = cm->connection;
+	if (likely(c->use_destMac || cm->addEthMAC)) {
+		/*
+		 * Check to see if we need to write a header.
+		 */
+		if (likely(cm->flags & SFE_IPV4_CONNECTION_MATCH_FLAG_WRITE_L2_HDR)) {
+			if (unlikely(!(cm->flags & SFE_IPV4_CONNECTION_MATCH_FLAG_WRITE_FAST_ETH_HDR))) {
+				dev_hard_header(skb, xmit_dev, ETH_P_IP,
+						cm->xmit_dest_mac, cm->xmit_src_mac, len);
+			} else {
+				/*
+				 * For the simple case we write this really fast.
+				 */
+				struct sfe_ipv4_eth_hdr *eth = (struct sfe_ipv4_eth_hdr *)__skb_push(skb, ETH_HLEN);
+				eth->h_proto = htons(ETH_P_IP);
+				eth->h_dest[0] = cm->xmit_dest_mac[0];
+				eth->h_dest[1] = cm->xmit_dest_mac[1];
+				eth->h_dest[2] = cm->xmit_dest_mac[2];
+				eth->h_source[0] = cm->xmit_src_mac[0];
+				eth->h_source[1] = cm->xmit_src_mac[1];
+				eth->h_source[2] = cm->xmit_src_mac[2];
+			}
 		}
 	}
-
 	/*
 	 * Mark outgoing packet
 	 */
@@ -2551,7 +2563,6 @@ int sfe_ipv4_create_rule(struct sfe_connection_create *sic)
 		}
 	}
 
-
 	if (sic->dest_ip.ip != sic->dest_ip_xlate.ip || sic->dest_port != sic->dest_port_xlate) {
 		original_cm->flags |= SFE_IPV4_CONNECTION_MATCH_FLAG_XLATE_DEST;
 		reply_cm->flags |= SFE_IPV4_CONNECTION_MATCH_FLAG_XLATE_SRC;
@@ -2579,6 +2590,21 @@ int sfe_ipv4_create_rule(struct sfe_connection_create *sic)
 	c->debug_read_seq = 0;
 	c->last_sync_jiffies = get_jiffies_64();
 
+	if (strncmp(dest_dev->name, si->ipv4_iface, strlen(si->ipv4_iface) - 1)== 0) {
+		c->use_destMac = false;
+		original_cm->addEthMAC = false;
+		reply_cm->addEthMAC = true;
+	}
+	else if (strncmp(src_dev->name, si->ipv4_iface, strlen(si->ipv4_iface) - 1)== 0) {
+		c->use_destMac = false;
+		reply_cm->addEthMAC = false;
+		original_cm->addEthMAC = true;
+	}
+	else {
+		c->use_destMac = true;
+		reply_cm->addEthMAC = false;
+		original_cm->addEthMAC = false;
+	}
 	/*
 	 * Take hold of our source and dest devices for the duration of the connection.
 	 */
@@ -2703,7 +2729,7 @@ static ssize_t sfe_ipv4_get_debug_dev(struct device *dev,
  * sysfs attributes.
  */
 static const struct device_attribute sfe_ipv4_debug_dev_attr =
-	__ATTR(debug_dev, S_IWUGO | S_IRUGO, sfe_ipv4_get_debug_dev, NULL);
+	__ATTR(debug_dev, 0664, sfe_ipv4_get_debug_dev, NULL);
 
 /*
  * sfe_ipv4_destroy_all_rules_for_dev()
@@ -3300,6 +3326,57 @@ static struct file_operations sfe_ipv4_debug_dev_fops = {
 	.release = sfe_ipv4_debug_dev_release
 };
 
+static int read_from_v4_iface_proc_entry(struct file *filp,char *buf,size_t count,loff_t *offp ) 
+{
+	struct sfe_ipv4 *si = &__si;
+
+	if ( count < si->iface_length )
+		return -EINVAL;
+
+	if (*offp != 0)
+		return 0;
+
+	if (copy_to_user(buf, si->ipv4_iface, si->iface_length))
+		return -EINVAL;
+
+	*offp = si->iface_length;
+
+	return si->iface_length;
+}
+
+static int write_to_v4_iface_proc_entry(struct file *file,const char *buf,int count,void *data )
+{
+	struct sfe_ipv4 *si = &__si;
+
+	if (count == 0) {
+		DEBUG_ERROR("Iface_length zero \n");
+		return 0;
+	}
+	else if(count > MAX_INTF_LEN)
+	{
+		DEBUG_ERROR("Iface_length too big \n");
+		return 0;
+	}
+
+	memset(si->ipv4_iface, 0, MAX_INTF_LEN);
+
+	if(copy_from_user(si->ipv4_iface, buf, count-1))
+		return -EFAULT;
+
+	si->iface_length = strlen(si->ipv4_iface);
+	DEBUG_INFO( "Iface length = %d , iface_name = %s \n", si->iface_length, si->ipv4_iface);
+
+	return count;
+}
+
+
+static struct file_operations ipv4_iface_proc_fops = {
+.owner = THIS_MODULE,
+.read = read_from_v4_iface_proc_entry,
+.write = write_to_v4_iface_proc_entry,
+};
+
+
 #ifdef CONFIG_NF_FLOW_COOKIE
 /*
  * sfe_register_flow_cookie_cb
@@ -3377,6 +3454,10 @@ static int __init sfe_ipv4_init(void)
 
 	si->debug_dev = result;
 
+	proc_create("ipv4_iface_name",0,NULL,&ipv4_iface_proc_fops);
+	memset(si->ipv4_iface,0,MAX_INTF_LEN);
+	si->iface_length=strlen(si->ipv4_iface);
+
 	/*
 	 * Create a timer to handle periodic statistics.
 	 */
@@ -3414,6 +3495,8 @@ static void __exit sfe_ipv4_exit(void)
 	del_timer_sync(&si->timer);
 
 	unregister_chrdev(si->debug_dev, "sfe_ipv4");
+
+	remove_proc_entry("ipv4_iface_name",NULL);
 
 	sysfs_remove_file(si->sys_sfe_ipv4, &sfe_ipv4_debug_dev_attr.attr);
 

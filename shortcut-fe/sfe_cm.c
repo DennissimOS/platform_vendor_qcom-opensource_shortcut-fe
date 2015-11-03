@@ -106,6 +106,7 @@ struct sfe_cm __sc;
  * Expose the hook for the receive processing.
  */
 extern int (*athrs_fast_nat_recv)(struct sk_buff *skb);
+extern void (*delete_sfe_entry)(struct nf_conn *ct);
 
 /*
  * Expose what should be a static flag in the TCP connection tracker.
@@ -204,6 +205,61 @@ int sfe_cm_recv(struct sk_buff *skb)
 }
 
 /*
+ * sfe_cm_delete_conntrack()
+ *	Handle SFE entry deletion based on conntrack deletion.
+ * Returns void
+ */
+
+static void sfe_cm_delete_conntrack (struct nf_conn *ct)
+{
+	struct sfe_connection_destroy sid;
+	struct nf_conntrack_tuple orig_tuple;
+
+	if (unlikely(!ct)) {
+		DEBUG_WARN("no ct in conntrack event callback\n");
+		return;
+	}
+
+	orig_tuple = ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple;
+	sid.protocol = (int32_t)orig_tuple.dst.protonum;
+
+	/*
+	 * Extract information from the conntrack connection.  We're only interested
+	 * in nominal connection information (i.e. we're ignoring any NAT information).
+	 */
+
+	switch (sid.protocol) {
+	case IPPROTO_TCP:
+		sid.src_port = orig_tuple.src.u.tcp.port;
+		sid.dest_port = orig_tuple.dst.u.tcp.port;
+		break;
+
+	case IPPROTO_UDP:
+		sid.src_port = orig_tuple.src.u.udp.port;
+		sid.dest_port = orig_tuple.dst.u.udp.port;
+		break;
+
+	default:
+		DEBUG_TRACE("unhandled protocol: %d\n", sid.protocol);
+		return;
+	}
+
+	if (likely(nf_ct_l3num(ct) == AF_INET)) {
+		sid.src_ip.ip = (__be32)orig_tuple.src.u3.ip;
+		sid.dest_ip.ip = (__be32)orig_tuple.dst.u3.ip;
+
+	sfe_ipv4_destroy_rule(&sid);
+	} else if (likely(nf_ct_l3num(ct) == AF_INET6)) {
+		sid.src_ip.ip6[0] = *((struct sfe_ipv6_addr *)&orig_tuple.src.u3.in6);
+		sid.dest_ip.ip6[0] = *((struct sfe_ipv6_addr *)&orig_tuple.dst.u3.in6);
+
+		sfe_ipv6_destroy_rule(&sid);
+	} else {
+		DEBUG_TRACE("ignoring non-IPv4 and non-IPv6 connection\n");
+	}
+}
+
+/*
  * sfe_cm_find_dev_and_mac_addr()
  *	Find the device and MAC address for a given IPv4/IPv6 address.
  *
@@ -299,6 +355,8 @@ static unsigned int sfe_cm_post_routing(struct sk_buff *skb, int is_v4)
 	struct net_device *dev;
 	struct net_device *src_dev;
 	struct net_device *dest_dev;
+	struct net_device *src_dev_use;
+	struct net_device *dest_dev_use;
 	struct net_device *src_br_dev = NULL;
 	struct net_device *dest_br_dev = NULL;
 	struct nf_conntrack_tuple orig_tuple;
@@ -526,6 +584,7 @@ static unsigned int sfe_cm_post_routing(struct sk_buff *skb, int is_v4)
 		sfe_cm_incr_exceptions(SFE_CM_EXCEPTION_NO_SRC_DEV);
 		return NF_ACCEPT;
 	}
+	src_dev_use = src_dev;
 
 	if (!sfe_cm_find_dev_and_mac_addr(&sic.src_ip_xlate, &dev, sic.src_mac_xlate, is_v4)) {
 		sfe_cm_incr_exceptions(SFE_CM_EXCEPTION_NO_SRC_XLATE_DEV);
@@ -545,6 +604,7 @@ static unsigned int sfe_cm_post_routing(struct sk_buff *skb, int is_v4)
 		sfe_cm_incr_exceptions(SFE_CM_EXCEPTION_NO_DEST_XLATE_DEV);
 		goto done1;
 	}
+	dest_dev_use = dest_dev;
 
 #if (!SFE_HOOK_ABOVE_BRIDGE)
 	/*
@@ -558,8 +618,7 @@ static unsigned int sfe_cm_post_routing(struct sk_buff *skb, int is_v4)
 			DEBUG_TRACE("no port found on bridge\n");
 			goto done2;
 		}
-
-		src_dev = src_br_dev;
+		src_dev_use = src_br_dev;
 	}
 
 	if (dest_dev->priv_flags & IFF_EBRIDGE) {
@@ -569,8 +628,7 @@ static unsigned int sfe_cm_post_routing(struct sk_buff *skb, int is_v4)
 			DEBUG_TRACE("no port found on bridge\n");
 			goto done3;
 		}
-
-		dest_dev = dest_br_dev;
+		dest_dev_use = dest_br_dev;
 	}
 #else
 	/*
@@ -584,8 +642,7 @@ static unsigned int sfe_cm_post_routing(struct sk_buff *skb, int is_v4)
 			DEBUG_TRACE("no bridge found for: %s\n", src_dev->name);
 			goto done2;
 		}
-
-		src_dev = src_br_dev;
+		src_dev_use = src_br_dev;
 	}
 
 	if (dest_dev->priv_flags & IFF_BRIDGE_PORT) {
@@ -596,20 +653,24 @@ static unsigned int sfe_cm_post_routing(struct sk_buff *skb, int is_v4)
 			goto done3;
 		}
 
-		dest_dev = dest_br_dev;
+		dest_dev_use = dest_br_dev;
 	}
 #endif
 
-	sic.src_dev = src_dev;
-	sic.dest_dev = dest_dev;
+	sic.src_dev = src_dev_use;
+	sic.dest_dev = dest_dev_use;
 
-	sic.src_mtu = src_dev->mtu;
-	sic.dest_mtu = dest_dev->mtu;
+	sic.src_mtu = src_dev_use->mtu;
+	sic.dest_mtu = dest_dev_use->mtu;
 
 	if (likely(is_v4)) {
-		sfe_ipv4_create_rule(&sic);
+		if (sfe_ipv4_create_rule(&sic) == 0) {
+				ct->sfe_entry = (void *)(&sic);
+			}
 	} else {
-		sfe_ipv6_create_rule(&sic);
+		if (sfe_ipv6_create_rule(&sic) == 0) {
+				ct->sfe_entry = (void *)(&sic);
+			}
 	}
 
 	/*
@@ -990,17 +1051,6 @@ static int __init sfe_cm_init(void)
 		goto exit3;
 	}
 
-#ifdef CONFIG_NF_CONNTRACK_EVENTS
-	/*
-	 * Register a notifier hook to get fast notifications of expired connections.
-	 */
-	result = nf_conntrack_register_notifier(&init_net, &sfe_cm_conntrack_notifier);
-	if (result < 0) {
-		DEBUG_ERROR("can't register nf notifier hook: %d\n", result);
-		goto exit4;
-	}
-#endif
-
 	spin_lock_init(&sc->lock);
 
 	/*
@@ -1008,6 +1058,12 @@ static int __init sfe_cm_init(void)
 	 */
 	BUG_ON(athrs_fast_nat_recv != NULL);
 	RCU_INIT_POINTER(athrs_fast_nat_recv, sfe_cm_recv);
+
+	/*
+	 * Register the delete conntrack callback.
+	 */
+	BUG_ON(delete_sfe_entry != NULL);
+	RCU_INIT_POINTER(delete_sfe_entry, sfe_cm_delete_conntrack);
 
 	/*
 	 * Hook the shortcut sync callback.

@@ -13,7 +13,8 @@
 #
 # Makefile for Shortcut FE.
 #
-
+SFE_SUPPORT_IPV6 = IPV6
+KERNEL_SRC ?= /lib/modules/$(shell uname -r)/build
 obj-m += shortcut-fe.o
 
 ifdef SFE_SUPPORT_IPV6
@@ -32,4 +33,18 @@ endif
 
 shortcut-fe-cm-objs := \
 	sfe_cm.o
+
+	ccflags-y += -D__CHECK_ENDIAN__
+
+CDEFINES += -D__CHECK_ENDIAN__
+
+KBUILD_CPPFLAGS += $(CDEFINES)
+
+all:
+	$(MAKE) -C $(KERNEL_SRC) M=$(shell pwd) modules
+modules_install:
+	$(MAKE) INSTALL_MOD_STRIP=1 -C $(KERNEL_SRC) M=$(shell pwd) modules_install
+
+clean:
+	$(MAKE) -C $(KERNEL_SRC) M=$(PWD) clean
 
