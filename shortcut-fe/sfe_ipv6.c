@@ -21,9 +21,59 @@
 #include <linux/icmp.h>
 #include <net/tcp.h>
 #include <linux/etherdevice.h>
+#include <linux/netdevice.h>
 
 #include "sfe.h"
 #include "sfe_cm.h"
+
+#define SECS * HZ
+#define PKT_THRESHOLD 12
+#define TIMEOUT 1 SECS
+
+struct sk_buff *skb_head,*skb_tail;
+struct timer_list sfe_timer;
+static int curr_dl_skb_num = 0;
+int var_timeout = TIMEOUT;
+int var_thresh = PKT_THRESHOLD;
+int threshold_count;
+int timeout_count;
+bool iface;
+
+
+#define XDBG_ADD_PROC_ENTRY(it, name, xdata)             \
+        {                                                 \
+                .procname       = (name),                 \
+                .data           = (xdata),                \
+                .maxlen         = sizeof(int),            \
+                .mode           = 0666,                   \
+                .proc_handler   = &proc_dointvec,         \
+        }
+
+enum {
+XDBG_TIMER_STEP_DBG,
+XDBG_THRESHOLD_STEP_DBG,
+XDBG_THRESHOLD_NUM_DBG,
+XDBG_TIMER_NUM_DBG,
+XDBG_MAX
+};
+
+static struct ctl_table sfe_sysctl_debug[] = 
+{
+    XDBG_ADD_PROC_ENTRY(XDBG_TIMER_STEP_DBG, "v6_timeout_track", &var_timeout),
+    XDBG_ADD_PROC_ENTRY(XDBG_THRESHOLD_STEP_DBG, "v6_threshold", &var_thresh),
+    XDBG_ADD_PROC_ENTRY(XDBG_THRESHOLD_STEP_DBG, "v6_threshold_count", &threshold_count),
+    XDBG_ADD_PROC_ENTRY(XDBG_THRESHOLD_STEP_DBG, "v6_timeout_count", &timeout_count),
+    {0, },
+};
+
+
+typedef struct sfe_proc_sys_db
+{
+    struct ctl_table debug_root[2];
+    struct ctl_table_header * debug_ctl_header;
+
+    struct ctl_path sfe_debug_ctl_path[2];
+}sfe_proc_sys_db_t;
 
 /*
  * By default Linux IP header and transport layer header structures are
@@ -273,7 +323,8 @@ struct sfe_ipv6_connection_match {
 	 */
 	uint64_t rx_packet_count64;	/* Number of packets RX'd */
 	uint64_t rx_byte_count64;	/* Number of bytes RX'd */
-	bool addEthMAC;	/*Add ethernet header if set*/
+	bool addEthMAC;                 /* Add ethernet header if set */
+	bool do_aggr;                   /* Aggregation is needed */
 };
 
 /*
@@ -476,9 +527,10 @@ struct sfe_ipv6 {
 	uint64_t packets_not_forwarded64;
 					/* Number of IPv6 packets not forwarded */
 	uint64_t exception_events64[SFE_IPV6_EXCEPTION_EVENT_LAST];
+	sfe_proc_sys_db_t proc1;
 
 	/*
-	 * Control state.
+	 * Control state here
 	 */
 	struct kobject *sys_sfe_ipv6;	/* sysfs linkage */
 	int debug_dev;			/* Major number of the debug char device */
@@ -561,9 +613,47 @@ static inline bool sfe_ipv6_is_ext_hdr(uint8_t hdr)
 		(hdr == SFE_IPV6_EXT_HDR_MH);
 }
 
+/* When the timer expires this callback function is called*/
+void sfe_timer_callback(unsigned long data)
+{
+	int k;
+
+	/* Delete the timer. */
+	k= del_timer(&sfe_timer);
+
+	/* Update the timeout hit counter. */
+	timeout_count++;
+
+	/* Transmit the list. */
+	if(skb_head)
+		dev_queue_xmit_list(skb_head);
+
+	/* Reset the params. */
+	curr_dl_skb_num = 0;
+	skb_head = NULL;
+	skb_tail = NULL;
+}
+
+int init_timer_module(void)
+{
+	int k;
+
+	/* Initialize the timer. */
+	k= del_timer(&sfe_timer);
+	init_timer(&sfe_timer);
+
+	/* Start the timer. */
+	sfe_timer.expires = jiffies +msecs_to_jiffies(var_timeout);
+	sfe_timer.data = 0;
+	sfe_timer.function = sfe_timer_callback;
+	add_timer(&sfe_timer);
+
+	return 0;
+}
+
 /*
  * sfe_ipv6_get_connection_match_hash()
- *	Generate the hash used in connection match lookups.
+ * Generate the hash used in connection match lookups.
  */
 static inline unsigned int sfe_ipv6_get_connection_match_hash(struct net_device *dev, uint8_t protocol,
 							      struct sfe_ipv6_addr *src_ip, __be16 src_port,
@@ -1242,6 +1332,9 @@ static int sfe_ipv6_recv_udp(struct sfe_ipv6 *si, struct sk_buff *skb, struct ne
 	__be16 dest_port;
 	struct sfe_ipv6_connection_match *cm;
 	struct net_device *xmit_dev;
+	struct sk_buff *new_skb,*temp ;
+	const struct net_device_ops *ops;
+	int queue_index = 0;
 
 	/*
 	 * Is our packet too short to contain a valid UDP header?
@@ -1438,6 +1531,8 @@ static int sfe_ipv6_recv_udp(struct sfe_ipv6 *si, struct sk_buff *skb, struct ne
 				/*
 				 * For the simple case we write this really fast.
 				 */
+				pskb_expand_head(skb, SKB_DATA_ALIGN(ETH_HLEN), 0,
+						GFP_ATOMIC);
 				struct sfe_ipv6_eth_hdr *eth = (struct sfe_ipv6_eth_hdr *)__skb_push(skb, ETH_HLEN);
 				eth->h_proto = htons(ETH_P_IPV6);
 				eth->h_dest[0] = cm->xmit_dest_mac[0];
@@ -1475,9 +1570,72 @@ static int sfe_ipv6_recv_udp(struct sfe_ipv6 *si, struct sk_buff *skb, struct ne
 	/*
 	 * Send the packet on its way.
 	 */
-	dev_queue_xmit(skb);
+	 
+	/*
+	 * do _aggr is set to true in case we need aggregation to happen
+	 */
+	if (cm->do_aggr )
+	{
+		pr_debug("\nUDP_v6-Downlink");
+		/* DownLink: skb pkt aggregation. */
+		new_skb=skb;
+		new_skb->next =NULL;
 
-	return 1;
+		/* Update WLAN Queue index and priority. */
+		ops = xmit_dev->netdev_ops;
+		if (ops->ndo_select_queue)
+			queue_index = ops->ndo_select_queue(xmit_dev, skb, NULL,
+							NULL);
+		skb_set_queue_mapping(skb, queue_index);
+
+		/* Check if the Threshold is reached*/
+		if (curr_dl_skb_num == (var_thresh - 1))
+		{
+			if (skb_tail)
+			{
+				skb_tail->next = new_skb;
+				skb_tail = skb_tail->next;
+			}
+			threshold_count++;
+
+			if(skb_head)
+				dev_queue_xmit_list(skb_head);
+			else
+				dev_queue_xmit(new_skb);
+			pr_debug("\nPacket in List: %d ",curr_dl_skb_num);
+
+			/* Reset the params. */
+			curr_dl_skb_num = 0;
+			skb_head = NULL;
+			skb_tail = NULL;
+
+			return 1;
+		}
+		else
+		{
+			/* skb head is null for the first packet*/
+			if(skb_head == NULL)
+			{
+				skb_head = new_skb;
+				skb_tail = new_skb;
+				init_timer_module();
+			}
+			else
+			{
+				skb_tail->next = new_skb;
+				skb_tail = skb_tail->next;
+			}
+			curr_dl_skb_num ++;
+
+			return 1;
+		}
+	}
+	else
+	{
+		pr_debug("\nUDP_v6-Uplink. No Aggregation. ");
+		dev_queue_xmit(skb);
+		return 1;
+	}
 }
 
 /*
@@ -1578,6 +1736,9 @@ static int sfe_ipv6_recv_tcp(struct sfe_ipv6 *si, struct sk_buff *skb, struct ne
 	struct sfe_ipv6_connection_match *counter_cm;
 	uint32_t flags;
 	struct net_device *xmit_dev;
+	struct sk_buff *new_skb ;
+	const struct net_device_ops *ops;
+	int queue_index = 0;
 
 	/*
 	 * Is our packet too short to contain a valid UDP header?
@@ -1963,6 +2124,8 @@ static int sfe_ipv6_recv_tcp(struct sfe_ipv6 *si, struct sk_buff *skb, struct ne
 				/*
 				 * For the simple case we write this really fast.
 				 */
+				pskb_expand_head(skb, SKB_DATA_ALIGN(ETH_HLEN), 0,
+						 GFP_ATOMIC);
 				struct sfe_ipv6_eth_hdr *eth = (struct sfe_ipv6_eth_hdr *)__skb_push(skb, ETH_HLEN);
 				eth->h_proto = htons(ETH_P_IPV6);
 				eth->h_dest[0] = cm->xmit_dest_mac[0];
@@ -1999,9 +2162,72 @@ static int sfe_ipv6_recv_tcp(struct sfe_ipv6 *si, struct sk_buff *skb, struct ne
 	/*
 	 * Send the packet on its way.
 	 */
-	dev_queue_xmit(skb);
 
-	return 1;
+	/*
+	 * do _aggr is set to true in case we need aggregation to happen
+	 */
+	if ( cm->do_aggr)
+	{
+		pr_debug("\nTCP_v6-Downlink");
+		/*DownLink: skb pkt aggregation*/
+		new_skb=skb;
+		new_skb->next =NULL;
+
+		/* Update WLAN Queue index and priority. */
+		ops = xmit_dev->netdev_ops;
+		if (ops->ndo_select_queue)
+			queue_index = ops->ndo_select_queue(xmit_dev, skb, NULL,
+									NULL);
+		skb_set_queue_mapping(skb, queue_index);
+
+		/* Check if the Threshold is reached*/
+		if (curr_dl_skb_num == var_thresh- 1)
+		{
+			if (skb_tail)
+			{
+				skb_tail->next = new_skb;
+				skb_tail = skb_tail->next;
+			}
+			threshold_count++;
+
+			pr_debug("\nPacket in List: %d ",curr_dl_skb_num);
+			if(skb_head)
+				dev_queue_xmit_list(skb_head);
+			else
+				dev_queue_xmit(new_skb);
+
+			/* Reset the params. */
+			curr_dl_skb_num = 0;
+			skb_head = NULL;
+			skb_tail = NULL;
+
+			return 1;
+		}
+		else
+		{
+			/* skb head is null for the first packet*/
+			if(skb_head == NULL)
+			{
+				skb_head = new_skb;
+				skb_tail = new_skb;
+				init_timer_module();
+			}
+			else
+			{
+				skb_tail->next = new_skb;
+				skb_tail = skb_tail->next;
+			}
+			curr_dl_skb_num ++;
+
+			return 1;
+		}
+	}
+	else
+	{
+		pr_debug("\nTCP_v6-UpLink. No Aggregation. ");
+		dev_queue_xmit(skb);
+		return 1;
+	}
 }
 
 /*
@@ -2628,6 +2854,18 @@ int sfe_ipv6_create_rule(struct sfe_connection_create *sic)
 		original_cm->addEthMAC = false;
 	}
 
+	#define INTF_LEN 5
+	if ((strncmp(dest_dev->name, "wlan0", INTF_LEN)  == 0) ||
+		(strncmp(dest_dev->name, "wlan1", INTF_LEN)  == 0 )) 
+	{
+		original_cm->do_aggr = true;
+		reply_cm->do_aggr = false;
+	}
+	else
+	{
+		original_cm->do_aggr = false;
+		reply_cm->do_aggr = false;
+	}
 
 	/*
 	 * Take hold of our source and dest devices for the duration of the connection.
@@ -3443,6 +3681,18 @@ static int __init sfe_ipv6_init(void)
 
 	DEBUG_INFO("SFE IPv6 init\n");
 
+	skb_head = NULL;
+	skb_tail = NULL;
+
+	/*register proc sys*/
+	si->proc1.sfe_debug_ctl_path[0].procname = "debug_v6";
+	si->proc1.debug_root[0].procname = "sfe_v6";
+	si->proc1.debug_root[0].mode = 0555;
+	si->proc1.debug_root[0].child = sfe_sysctl_debug;
+	si->proc1.debug_ctl_header = register_sysctl_paths(si->proc1.sfe_debug_ctl_path, si->proc1.debug_root);
+
+	DEBUG_INFO("SFE IPv6 init\n");
+
 	/*
 	 * Create sys/sfe_ipv6
 	 */
@@ -3540,4 +3790,3 @@ EXPORT_SYMBOL(sfe_ipv6_unregister_flow_cookie_cb);
 MODULE_AUTHOR("Qualcomm Atheros Inc.");
 MODULE_DESCRIPTION("Shortcut Forwarding Engine - IPv6 support");
 MODULE_LICENSE("Dual BSD/GPL");
-

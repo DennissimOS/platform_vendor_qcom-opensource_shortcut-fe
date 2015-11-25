@@ -21,10 +21,57 @@
 #include <linux/icmp.h>
 #include <net/tcp.h>
 #include <linux/etherdevice.h>
+#include <linux/netdevice.h>
 
 #include "sfe.h"
 #include "sfe_cm.h"
+#define SECS * HZ
+#define PKT_THRESHOLD 12
+#define TIMEOUT 1 SECS
 
+struct sk_buff *skb_head,*skb_tail;
+struct timer_list sfe_timer;
+static int curr_dl_skb_num = 0;
+int var_timeout = TIMEOUT;
+int var_thresh = PKT_THRESHOLD;
+int threshold_count;
+int timeout_count;
+bool iface;
+
+#define XDBG_ADD_PROC_ENTRY(it, name, xdata)             \
+        {                                                 \
+                .procname       = (name),                 \
+                .data           = (xdata),                \
+                .maxlen         = sizeof(int),            \
+                .mode           = 0666,                   \
+                .proc_handler   = &proc_dointvec,         \
+        }
+
+enum {
+XDBG_TIMER_STEP_DBG,
+XDBG_THRESHOLD_STEP_DBG,
+XDBG_THRESHOLD_NUM_DBG,
+XDBG_TIMER_NUM_DBG,
+XDBG_MAX
+};
+
+static struct ctl_table sfe_sysctl_debug[] = 
+{
+    XDBG_ADD_PROC_ENTRY(XDBG_TIMER_STEP_DBG, "timeout_track", &var_timeout),
+    XDBG_ADD_PROC_ENTRY(XDBG_THRESHOLD_STEP_DBG, "threshold", &var_thresh),
+    XDBG_ADD_PROC_ENTRY(XDBG_THRESHOLD_STEP_DBG, "threshold_count", &threshold_count),
+    XDBG_ADD_PROC_ENTRY(XDBG_THRESHOLD_STEP_DBG, "timeout_count", &timeout_count),
+    {0, },
+};
+
+
+typedef struct sfe_proc_sys_db
+{
+    struct ctl_table debug_root[2];
+    struct ctl_table_header * debug_ctl_header;
+
+    struct ctl_path sfe_debug_ctl_path[2];
+}sfe_proc_sys_db_t;
 /*
  * By default Linux IP header and transport layer header structures are
  * unpacked, assuming that such headers should be 32-bit aligned.
@@ -248,7 +295,8 @@ struct sfe_ipv4_connection_match {
 	 */
 	uint64_t rx_packet_count64;	/* Number of packets RX'd */
 	uint64_t rx_byte_count64;	/* Number of bytes RX'd */
-	bool addEthMAC;	/*Add ethernet header if set*/
+	bool addEthMAC;	                /* Add ethernet header if set */
+	bool do_aggr;                   /* Aggregation is needed */
 };
 
 /*
@@ -456,7 +504,7 @@ struct sfe_ipv4 {
 	struct kobject *sys_sfe_ipv4;	/* sysfs linkage */
 	int debug_dev;			/* Major number of the debug char device */
 	uint32_t debug_read_seq;	/* sequence number for debug dump */
-
+	sfe_proc_sys_db_t proc;
 	/*
 	* Proc entry for Interface name
 	*/
@@ -493,6 +541,44 @@ typedef bool (*sfe_ipv4_debug_xml_write_method_t)(struct sfe_ipv4 *si, char *buf
 						  int *total_read, struct sfe_ipv4_debug_xml_write_state *ws);
 
 struct sfe_ipv4 __si;
+
+/* When the timer expires this callback function is called*/
+void sfe_timer_callback(unsigned long data)
+{
+	int k;
+
+	/* Delete the timer. */
+	k= del_timer(&sfe_timer);
+
+	/* Update the timeout hit counter. */
+	timeout_count++;
+
+	/* Transmit the list. */
+	if(skb_head)
+		dev_queue_xmit_list(skb_head);
+
+	/* Reset the params. */
+	curr_dl_skb_num = 0;
+	skb_head = NULL;
+	skb_tail = NULL;
+}
+
+int init_timer_module(void)
+{
+	int k;
+
+	/* Initialize the timer. */
+	k= del_timer(&sfe_timer);
+	init_timer(&sfe_timer);
+
+	/* Start the timer. */
+	sfe_timer.expires = jiffies +msecs_to_jiffies(var_timeout);
+	sfe_timer.data = 0;
+	sfe_timer.function = sfe_timer_callback;
+	add_timer(&sfe_timer);
+
+	return 0;
+}
 
 /*
  * sfe_ipv4_gen_ip_csum()
@@ -1177,7 +1263,10 @@ static int sfe_ipv4_recv_udp(struct sfe_ipv4 *si, struct sk_buff *skb, struct ne
 	struct sfe_ipv4_connection_match *cm;
 	uint8_t ttl;
 	struct net_device *xmit_dev;
-
+	struct sk_buff *new_skb ;
+	int k;
+	const struct net_device_ops *ops;
+	int queue_index = 0;
 	/*
 	 * Is our packet too short to contain a valid UDP header?
 	 */
@@ -1393,6 +1482,8 @@ static int sfe_ipv4_recv_udp(struct sfe_ipv4 *si, struct sk_buff *skb, struct ne
 				/*
 				 * For the simple case we write this really fast.
 				 */
+				pskb_expand_head(skb, SKB_DATA_ALIGN(ETH_HLEN), 0,
+						GFP_ATOMIC);
 				struct sfe_ipv4_eth_hdr *eth = (struct sfe_ipv4_eth_hdr *)__skb_push(skb, ETH_HLEN);
 				eth->h_proto = htons(ETH_P_IP);
 				eth->h_dest[0] = cm->xmit_dest_mac[0];
@@ -1429,9 +1520,73 @@ static int sfe_ipv4_recv_udp(struct sfe_ipv4 *si, struct sk_buff *skb, struct ne
 	/*
 	 * Send the packet on its way.
 	 */
-	dev_queue_xmit(skb);
 
-	return 1;
+	/*
+	 * do _aggr is set to true in case we need aggregation to happen
+	 */
+	if (cm->do_aggr )
+	{
+		pr_debug("\nUDP_v4-Dowlink");
+
+		/* skb pkt aggregation */
+		new_skb=skb;
+		new_skb->next =NULL;
+
+		/* Update WLAN Queue index and priority. */
+		ops = xmit_dev->netdev_ops;
+		if (ops->ndo_select_queue)
+			queue_index = ops->ndo_select_queue(xmit_dev, skb, NULL,
+							    NULL);
+		skb_set_queue_mapping(skb, queue_index);
+
+		/* Check if the Threshold is reached*/
+		if (curr_dl_skb_num == (var_thresh - 1))
+		{
+			if (skb_tail)
+			{
+				skb_tail->next = new_skb;
+				skb_tail = skb_tail->next;
+			}
+			threshold_count++;
+
+			pr_debug("\nPacket in List: %d ",curr_dl_skb_num);
+			if(skb_head)
+				dev_queue_xmit_list(skb_head);
+			else
+				dev_queue_xmit(new_skb);
+
+			/* Reset the params. */
+			curr_dl_skb_num = 0;
+			skb_head = NULL;
+			skb_tail = NULL;
+
+			return 1;
+		}
+		else
+		{ 
+			/* skb head is null for the first packet*/
+			if(skb_head == NULL)
+			{
+				skb_head = new_skb;
+				skb_tail = new_skb;
+				init_timer_module();
+			}
+			else
+			{
+				skb_tail->next = new_skb;
+				skb_tail = skb_tail->next;
+			}
+			curr_dl_skb_num ++;
+
+			return 1;
+		}
+	}
+	else
+	{
+		pr_debug("\nUDP_v4-Uplink. No Aggregation.");
+		dev_queue_xmit(skb);
+		return 1;
+	}
 }
 
 /*
@@ -1533,6 +1688,10 @@ static int sfe_ipv4_recv_tcp(struct sfe_ipv4 *si, struct sk_buff *skb, struct ne
 	uint8_t ttl;
 	uint32_t flags;
 	struct net_device *xmit_dev;
+	struct sk_buff *new_skb ;
+	int k;
+	const struct net_device_ops *ops;
+	int queue_index = 0;
 
 	/*
 	 * Is our packet too short to contain a valid UDP header?
@@ -1933,6 +2092,8 @@ static int sfe_ipv4_recv_tcp(struct sfe_ipv4 *si, struct sk_buff *skb, struct ne
 				/*
 				 * For the simple case we write this really fast.
 				 */
+				pskb_expand_head(skb, SKB_DATA_ALIGN(ETH_HLEN), 0,
+						GFP_ATOMIC);
 				struct sfe_ipv4_eth_hdr *eth = (struct sfe_ipv4_eth_hdr *)__skb_push(skb, ETH_HLEN);
 				eth->h_proto = htons(ETH_P_IP);
 				eth->h_dest[0] = cm->xmit_dest_mac[0];
@@ -1969,9 +2130,71 @@ static int sfe_ipv4_recv_tcp(struct sfe_ipv4 *si, struct sk_buff *skb, struct ne
 	/*
 	 * Send the packet on its way.
 	 */
-	dev_queue_xmit(skb);
+	/*
+	 * do _aggr is set to true in case we need aggregation to happen
+	 */
+	if ( cm->do_aggr)
+	{
+		pr_debug("\nTCP_v4-Dowlink");
+		new_skb=skb;
+		new_skb->next =NULL;
 
-	return 1;
+		/* Update WLAN Queue index and priority. */
+		ops = xmit_dev->netdev_ops;
+		if (ops->ndo_select_queue)
+			queue_index = ops->ndo_select_queue(xmit_dev, skb, NULL,
+							    NULL);
+		skb_set_queue_mapping(skb, queue_index);
+
+		/* Check if the Threshold is reached*/
+		if (curr_dl_skb_num == (var_thresh- 1))
+		{
+			if (skb_tail)
+			{
+				skb_tail->next = new_skb;
+				skb_tail = skb_tail->next;
+			}
+
+			threshold_count++;
+
+			pr_debug("\nPacket in List: %d ",curr_dl_skb_num);
+			if(skb_head)
+				dev_queue_xmit_list(skb_head);
+			else
+				dev_queue_xmit(new_skb);
+
+			/* Reset the params. */
+			curr_dl_skb_num = 0;
+			skb_head = NULL;
+			skb_tail = NULL;
+
+			return 1;
+		}
+		else
+		{
+			/* skb head is null for the first packet*/
+			if(skb_head == NULL)
+			{
+				skb_head = new_skb;
+				skb_tail = new_skb;
+				init_timer_module();
+			}
+			else
+			{
+				skb_tail->next = new_skb;
+				skb_tail = skb_tail->next;
+			}
+			curr_dl_skb_num ++;
+
+			return 1;
+		}
+	}
+	else
+	{
+		pr_debug("\nTCP_v4-UPLINK. No Aggregation. ");
+		dev_queue_xmit(skb);
+		return 1;
+	}
 }
 
 /*
@@ -2605,6 +2828,21 @@ int sfe_ipv4_create_rule(struct sfe_connection_create *sic)
 		reply_cm->addEthMAC = false;
 		original_cm->addEthMAC = false;
 	}
+
+	/* If the packet destination is wlan0 or wlan1, do aggregation*/
+	#define INTF_LEN 5
+	if ((strncmp(dest_dev->name, "wlan0", INTF_LEN)  == 0) ||
+		(strncmp(dest_dev->name, "wlan1", INTF_LEN)  == 0 )) 
+	{
+		original_cm->do_aggr = true;
+		reply_cm->do_aggr = false;
+	}
+	else
+	{
+		original_cm->do_aggr = false;
+		reply_cm->do_aggr = false;
+	}
+
 	/*
 	 * Take hold of our source and dest devices for the duration of the connection.
 	 */
@@ -2649,7 +2887,7 @@ int sfe_ipv4_create_rule(struct sfe_connection_create *sic)
 		   dest_dev->name, sic->dest_mac, sic->dest_mac_xlate,
 		   &sic->dest_ip.ip, &sic->dest_ip_xlate.ip, ntohs(sic->dest_port), ntohs(sic->dest_port_xlate));
 
-	return 0;
+    return 0;
 }
 
 /*
@@ -3425,6 +3663,16 @@ static int __init sfe_ipv4_init(void)
 
 	DEBUG_INFO("SFE IPv4 init\n");
 
+	skb_head = NULL;
+	skb_tail = NULL;
+
+	/*register proc sys*/
+	si->proc.sfe_debug_ctl_path[0].procname = "debug";
+	si->proc.debug_root[0].procname = "sfe";
+	si->proc.debug_root[0].mode = 0555;
+	si->proc.debug_root[0].child = sfe_sysctl_debug;
+	si->proc.debug_ctl_header = register_sysctl_paths(si->proc.sfe_debug_ctl_path, si->proc.debug_root);
+
 	/*
 	 * Create sys/sfe_ipv4
 	 */
@@ -3457,7 +3705,7 @@ static int __init sfe_ipv4_init(void)
 	proc_create("ipv4_iface_name",0,NULL,&ipv4_iface_proc_fops);
 	memset(si->ipv4_iface,0,MAX_INTF_LEN);
 	si->iface_length=strlen(si->ipv4_iface);
-
+		
 	/*
 	 * Create a timer to handle periodic statistics.
 	 */
@@ -3522,4 +3770,3 @@ EXPORT_SYMBOL(sfe_unregister_flow_cookie_cb);
 MODULE_AUTHOR("Qualcomm Atheros Inc.");
 MODULE_DESCRIPTION("Shortcut Forwarding Engine - IPv4 edition");
 MODULE_LICENSE("Dual BSD/GPL");
-
