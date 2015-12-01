@@ -38,6 +38,25 @@ typedef union {
 	struct sfe_ipv6_addr	ip6[1];
 } sfe_ip_addr_t;
 
+#define MAX_WLAN_INDEX 2
+typedef enum
+{
+	SFE_WLAN_LINK_INDEX_NONE = -1,
+	SFE_WLAN_LINK_INDEX0 = 0,
+	SFE_WLAN_LINK_INDEX1 = 1
+}sfe_wlan_index_type;
+
+/* 
+ * WLAN Aggregation params.
+ */
+struct sfe_wlan_aggr_params
+{
+	struct sk_buff *skb_head;
+	struct sk_buff *skb_tail;
+	struct timer_list sfe_timer;
+	int curr_dl_skb_num;
+};
+
 /*
  * connection creation structure.
  */

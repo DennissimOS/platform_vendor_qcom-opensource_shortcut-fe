@@ -30,9 +30,8 @@
 #define PKT_THRESHOLD 12
 #define TIMEOUT 1 SECS
 
-struct sk_buff *skb_head,*skb_tail;
-struct timer_list sfe_timer;
-static int curr_dl_skb_num = 0;
+struct sfe_wlan_aggr_params aggr_params[MAX_WLAN_INDEX];
+
 int var_timeout = TIMEOUT;
 int var_thresh = PKT_THRESHOLD;
 int threshold_count;
@@ -325,6 +324,7 @@ struct sfe_ipv6_connection_match {
 	uint64_t rx_byte_count64;	/* Number of bytes RX'd */
 	bool addEthMAC;                 /* Add ethernet header if set */
 	bool do_aggr;                   /* Aggregation is needed */
+	sfe_wlan_index_type index;      /* WLAN Interface index. */
 };
 
 /*
@@ -617,36 +617,37 @@ static inline bool sfe_ipv6_is_ext_hdr(uint8_t hdr)
 void sfe_timer_callback(unsigned long data)
 {
 	int k;
+	sfe_wlan_index_type index = (sfe_wlan_index_type)data;
 
 	/* Delete the timer. */
-	k= del_timer(&sfe_timer);
+	k= del_timer(&aggr_params[index].sfe_timer);
 
 	/* Update the timeout hit counter. */
 	timeout_count++;
 
 	/* Transmit the list. */
-	if(skb_head)
-		dev_queue_xmit_list(skb_head);
+	if(aggr_params[index].skb_head)
+		dev_queue_xmit_list(aggr_params[index].skb_head);
 
 	/* Reset the params. */
-	curr_dl_skb_num = 0;
-	skb_head = NULL;
-	skb_tail = NULL;
+	aggr_params[index].curr_dl_skb_num = 0;
+	aggr_params[index].skb_head = NULL;
+	aggr_params[index].skb_tail = NULL;
 }
 
-int init_timer_module(void)
+int init_timer_module(sfe_wlan_index_type index)
 {
 	int k;
 
 	/* Initialize the timer. */
-	k= del_timer(&sfe_timer);
-	init_timer(&sfe_timer);
+	k= del_timer(&aggr_params[index].sfe_timer);
+	init_timer(&aggr_params[index].sfe_timer);
 
 	/* Start the timer. */
-	sfe_timer.expires = jiffies +msecs_to_jiffies(var_timeout);
-	sfe_timer.data = 0;
-	sfe_timer.function = sfe_timer_callback;
-	add_timer(&sfe_timer);
+	aggr_params[index].sfe_timer.expires = jiffies +msecs_to_jiffies(var_timeout);
+	aggr_params[index].sfe_timer.data = index;
+	aggr_params[index].sfe_timer.function = sfe_timer_callback;
+	add_timer(&aggr_params[index].sfe_timer);
 
 	return 0;
 }
@@ -1589,43 +1590,43 @@ static int sfe_ipv6_recv_udp(struct sfe_ipv6 *si, struct sk_buff *skb, struct ne
 		skb_set_queue_mapping(skb, queue_index);
 
 		/* Check if the Threshold is reached*/
-		if (curr_dl_skb_num == (var_thresh - 1))
+		if (aggr_params[cm->index].curr_dl_skb_num == (var_thresh - 1))
 		{
-			if (skb_tail)
+			if (aggr_params[cm->index].skb_tail)
 			{
-				skb_tail->next = new_skb;
-				skb_tail = skb_tail->next;
+				aggr_params[cm->index].skb_tail->next = new_skb;
+				aggr_params[cm->index].skb_tail = aggr_params[cm->index].skb_tail->next;
 			}
 			threshold_count++;
 
-			if(skb_head)
-				dev_queue_xmit_list(skb_head);
+			if(aggr_params[cm->index].skb_head)
+				dev_queue_xmit_list(aggr_params[cm->index].skb_head);
 			else
 				dev_queue_xmit(new_skb);
-			pr_debug("\nPacket in List: %d ",curr_dl_skb_num);
+			pr_debug("\nPacket in List: %d ",aggr_params[cm->index].curr_dl_skb_num);
 
 			/* Reset the params. */
-			curr_dl_skb_num = 0;
-			skb_head = NULL;
-			skb_tail = NULL;
+			aggr_params[cm->index].curr_dl_skb_num = 0;
+			aggr_params[cm->index].skb_head = NULL;
+			aggr_params[cm->index].skb_tail = NULL;
 
 			return 1;
 		}
 		else
 		{
 			/* skb head is null for the first packet*/
-			if(skb_head == NULL)
+			if(aggr_params[cm->index].skb_head == NULL)
 			{
-				skb_head = new_skb;
-				skb_tail = new_skb;
-				init_timer_module();
+				aggr_params[cm->index].skb_head = new_skb;
+				aggr_params[cm->index].skb_tail = new_skb;
+				init_timer_module(cm->index);
 			}
 			else
 			{
-				skb_tail->next = new_skb;
-				skb_tail = skb_tail->next;
+				aggr_params[cm->index].skb_tail->next = new_skb;
+				aggr_params[cm->index].skb_tail = aggr_params[cm->index].skb_tail->next;
 			}
-			curr_dl_skb_num ++;
+			aggr_params[cm->index].curr_dl_skb_num ++;
 
 			return 1;
 		}
@@ -2181,43 +2182,43 @@ static int sfe_ipv6_recv_tcp(struct sfe_ipv6 *si, struct sk_buff *skb, struct ne
 		skb_set_queue_mapping(skb, queue_index);
 
 		/* Check if the Threshold is reached*/
-		if (curr_dl_skb_num == var_thresh- 1)
+		if (aggr_params[cm->index].curr_dl_skb_num == var_thresh- 1)
 		{
-			if (skb_tail)
+			if (aggr_params[cm->index].skb_tail)
 			{
-				skb_tail->next = new_skb;
-				skb_tail = skb_tail->next;
+				aggr_params[cm->index].skb_tail->next = new_skb;
+				aggr_params[cm->index].skb_tail = aggr_params[cm->index].skb_tail->next;
 			}
 			threshold_count++;
 
-			pr_debug("\nPacket in List: %d ",curr_dl_skb_num);
-			if(skb_head)
-				dev_queue_xmit_list(skb_head);
+			pr_debug("\nPacket in List: %d ",aggr_params[cm->index].curr_dl_skb_num);
+			if(aggr_params[cm->index].skb_head)
+				dev_queue_xmit_list(aggr_params[cm->index].skb_head);
 			else
 				dev_queue_xmit(new_skb);
 
 			/* Reset the params. */
-			curr_dl_skb_num = 0;
-			skb_head = NULL;
-			skb_tail = NULL;
+			aggr_params[cm->index].curr_dl_skb_num = 0;
+			aggr_params[cm->index].skb_head = NULL;
+			aggr_params[cm->index].skb_tail = NULL;
 
 			return 1;
 		}
 		else
 		{
 			/* skb head is null for the first packet*/
-			if(skb_head == NULL)
+			if(aggr_params[cm->index].skb_head == NULL)
 			{
-				skb_head = new_skb;
-				skb_tail = new_skb;
-				init_timer_module();
+				aggr_params[cm->index].skb_head = new_skb;
+				aggr_params[cm->index].skb_tail = new_skb;
+				init_timer_module(cm->index);
 			}
 			else
 			{
-				skb_tail->next = new_skb;
-				skb_tail = skb_tail->next;
+				aggr_params[cm->index].skb_tail->next = new_skb;
+				aggr_params[cm->index].skb_tail = aggr_params[cm->index].skb_tail->next;
 			}
-			curr_dl_skb_num ++;
+			aggr_params[cm->index].curr_dl_skb_num ++;
 
 			return 1;
 		}
@@ -2855,16 +2856,26 @@ int sfe_ipv6_create_rule(struct sfe_connection_create *sic)
 	}
 
 	#define INTF_LEN 5
-	if ((strncmp(dest_dev->name, "wlan0", INTF_LEN)  == 0) ||
-		(strncmp(dest_dev->name, "wlan1", INTF_LEN)  == 0 )) 
+	if ((strncmp(dest_dev->name, "wlan0", INTF_LEN)  == 0)) 
 	{
 		original_cm->do_aggr = true;
+		original_cm->index = SFE_WLAN_LINK_INDEX0;
 		reply_cm->do_aggr = false;
+		reply_cm->index = SFE_WLAN_LINK_INDEX_NONE;
+	}
+	else if ((strncmp(dest_dev->name, "wlan1", INTF_LEN)  == 0 ))
+	{
+		original_cm->do_aggr = true;
+		original_cm->index = SFE_WLAN_LINK_INDEX1;
+		reply_cm->do_aggr = false;
+		reply_cm->index = SFE_WLAN_LINK_INDEX_NONE;
 	}
 	else
 	{
 		original_cm->do_aggr = false;
+		original_cm->index = SFE_WLAN_LINK_INDEX_NONE;
 		reply_cm->do_aggr = false;
+		reply_cm->index = SFE_WLAN_LINK_INDEX_NONE;
 	}
 
 	/*
@@ -3681,9 +3692,6 @@ static int __init sfe_ipv6_init(void)
 
 	DEBUG_INFO("SFE IPv6 init\n");
 
-	skb_head = NULL;
-	skb_tail = NULL;
-
 	/*register proc sys*/
 	si->proc1.sfe_debug_ctl_path[0].procname = "debug_v6";
 	si->proc1.debug_root[0].procname = "sfe_v6";
@@ -3725,6 +3733,8 @@ static int __init sfe_ipv6_init(void)
 	proc_create("ipv6_iface_name",0,NULL,&ipv6_iface_proc_fops);
 	memset(si->ipv6_iface,0,MAX_INTF_LEN);
 	si->iface_length=strlen(si->ipv6_iface);
+
+	memset(aggr_params, 0, sizeof(aggr_params));
 
 	/*
 	 * Create a timer to handle periodic statistics.
