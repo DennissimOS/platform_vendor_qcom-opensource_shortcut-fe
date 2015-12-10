@@ -26,9 +26,8 @@
 #include "sfe.h"
 #include "sfe_cm.h"
 
-#define SECS * HZ
-#define PKT_THRESHOLD 12
-#define TIMEOUT 1 SECS
+#define PKT_THRESHOLD 10
+#define TIMEOUT 10
 
 struct sfe_wlan_aggr_params aggr_params[MAX_WLAN_INDEX];
 
@@ -58,7 +57,7 @@ XDBG_MAX
 
 static struct ctl_table sfe_sysctl_debug[] = 
 {
-    XDBG_ADD_PROC_ENTRY(XDBG_TIMER_STEP_DBG, "v6_timeout_track", &var_timeout),
+    XDBG_ADD_PROC_ENTRY(XDBG_TIMER_STEP_DBG, "v6_timeout_value", &var_timeout),
     XDBG_ADD_PROC_ENTRY(XDBG_THRESHOLD_STEP_DBG, "v6_threshold", &var_thresh),
     XDBG_ADD_PROC_ENTRY(XDBG_THRESHOLD_STEP_DBG, "v6_threshold_count", &threshold_count),
     XDBG_ADD_PROC_ENTRY(XDBG_THRESHOLD_STEP_DBG, "v6_timeout_count", &timeout_count),
@@ -325,6 +324,7 @@ struct sfe_ipv6_connection_match {
 	bool addEthMAC;                 /* Add ethernet header if set */
 	bool do_aggr;                   /* Aggregation is needed */
 	sfe_wlan_index_type index;      /* WLAN Interface index. */
+	bool expand_head;               /* Extra headroom needed */
 };
 
 /*
@@ -1532,8 +1532,10 @@ static int sfe_ipv6_recv_udp(struct sfe_ipv6 *si, struct sk_buff *skb, struct ne
 				/*
 				 * For the simple case we write this really fast.
 				 */
-				pskb_expand_head(skb, SKB_DATA_ALIGN(ETH_HLEN), 0,
-						GFP_ATOMIC);
+				if (cm->expand_head)
+					pskb_expand_head(skb, SKB_DATA_ALIGN(ETH_HLEN), 0,
+							 GFP_ATOMIC);
+
 				struct sfe_ipv6_eth_hdr *eth = (struct sfe_ipv6_eth_hdr *)__skb_push(skb, ETH_HLEN);
 				eth->h_proto = htons(ETH_P_IPV6);
 				eth->h_dest[0] = cm->xmit_dest_mac[0];
@@ -2125,8 +2127,10 @@ static int sfe_ipv6_recv_tcp(struct sfe_ipv6 *si, struct sk_buff *skb, struct ne
 				/*
 				 * For the simple case we write this really fast.
 				 */
-				pskb_expand_head(skb, SKB_DATA_ALIGN(ETH_HLEN), 0,
-						 GFP_ATOMIC);
+				if (cm->expand_head)
+					pskb_expand_head(skb, SKB_DATA_ALIGN(ETH_HLEN), 0,
+							 GFP_ATOMIC);
+
 				struct sfe_ipv6_eth_hdr *eth = (struct sfe_ipv6_eth_hdr *)__skb_push(skb, ETH_HLEN);
 				eth->h_proto = htons(ETH_P_IPV6);
 				eth->h_dest[0] = cm->xmit_dest_mac[0];
@@ -2742,6 +2746,7 @@ int sfe_ipv6_create_rule(struct sfe_connection_create *sic)
 	original_cm->active_next = NULL;
 	original_cm->active_prev = NULL;
 	original_cm->active = false;
+	original_cm->expand_head = true;
 
 	/*
 	 * For PPP links we don't write an L2 header.  For everything else we do.
@@ -2793,6 +2798,7 @@ int sfe_ipv6_create_rule(struct sfe_connection_create *sic)
 	reply_cm->active_next = NULL;
 	reply_cm->active_prev = NULL;
 	reply_cm->active = false;
+	reply_cm->expand_head = true;
 
 	/*
 	 * For PPP links we don't write an L2 header.  For everything else we do.
@@ -2815,11 +2821,15 @@ int sfe_ipv6_create_rule(struct sfe_connection_create *sic)
 	if (!sfe_ipv6_addr_equal(sic->dest_ip.ip6, sic->dest_ip_xlate.ip6) || sic->dest_port != sic->dest_port_xlate) {
 		original_cm->flags |= SFE_IPV6_CONNECTION_MATCH_FLAG_XLATE_DEST;
 		reply_cm->flags |= SFE_IPV6_CONNECTION_MATCH_FLAG_XLATE_SRC;
+		original_cm->expand_head = false;
+		reply_cm->expand_head = false;
 	}
 
 	if (!sfe_ipv6_addr_equal(sic->src_ip.ip6, sic->src_ip_xlate.ip6) || sic->src_port != sic->src_port_xlate) {
 		original_cm->flags |= SFE_IPV6_CONNECTION_MATCH_FLAG_XLATE_SRC;
 		reply_cm->flags |= SFE_IPV6_CONNECTION_MATCH_FLAG_XLATE_DEST;
+		original_cm->expand_head = false;
+		reply_cm->expand_head = false;
 	}
 
 	c->protocol = sic->protocol;
@@ -2862,6 +2872,8 @@ int sfe_ipv6_create_rule(struct sfe_connection_create *sic)
 		original_cm->index = SFE_WLAN_LINK_INDEX0;
 		reply_cm->do_aggr = false;
 		reply_cm->index = SFE_WLAN_LINK_INDEX_NONE;
+		original_cm->expand_head = true;
+		reply_cm->expand_head = true;
 	}
 	else if ((strncmp(dest_dev->name, "wlan1", INTF_LEN)  == 0 ))
 	{
@@ -2869,6 +2881,8 @@ int sfe_ipv6_create_rule(struct sfe_connection_create *sic)
 		original_cm->index = SFE_WLAN_LINK_INDEX1;
 		reply_cm->do_aggr = false;
 		reply_cm->index = SFE_WLAN_LINK_INDEX_NONE;
+		original_cm->expand_head = true;
+		reply_cm->expand_head = true;
 	}
 	else
 	{
