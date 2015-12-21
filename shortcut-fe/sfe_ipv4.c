@@ -1515,11 +1515,6 @@ static int sfe_ipv4_recv_udp(struct sfe_ipv4 *si, struct sk_buff *skb, struct ne
 	prefetch(skb_shinfo(skb));
 
 	/*
-	 * Mark that this packet has been fast forwarded.
-	 */
-	skb->fast_forwarded = 1;
-
-	/*
 	 * Send the packet on its way.
 	 */
 
@@ -1529,6 +1524,11 @@ static int sfe_ipv4_recv_udp(struct sfe_ipv4 *si, struct sk_buff *skb, struct ne
 	if (cm->do_aggr )
 	{
 		pr_debug("\nUDP_v4-Dowlink");
+
+		/*
+		 * Mark that this packet has been fast forwarded.
+		 */
+		skb->fast_forwarded = 1;
 
 		/* skb pkt aggregation */
 		new_skb=skb;
@@ -1839,7 +1839,7 @@ static int sfe_ipv4_recv_tcp(struct sfe_ipv4 *si, struct sk_buff *skb, struct ne
 	/*
 	 * Are we doing sequence number checking?
 	 */
-	if (likely(!(cm->flags & SFE_IPV4_CONNECTION_MATCH_FLAG_NO_SEQ_CHECK))) {
+	if (unlikely(!(cm->flags & SFE_IPV4_CONNECTION_MATCH_FLAG_NO_SEQ_CHECK))) {
 		uint32_t seq;
 		uint32_t ack;
 		uint32_t sack;
@@ -2127,11 +2127,6 @@ static int sfe_ipv4_recv_tcp(struct sfe_ipv4 *si, struct sk_buff *skb, struct ne
 	prefetch(skb_shinfo(skb));
 
 	/*
-	 * Mark that this packet has been fast forwarded.
-	 */
-	skb->fast_forwarded = 1;
-
-	/*
 	 * Send the packet on its way.
 	 */
 	/*
@@ -2140,6 +2135,12 @@ static int sfe_ipv4_recv_tcp(struct sfe_ipv4 *si, struct sk_buff *skb, struct ne
 	if ( cm->do_aggr)
 	{
 		pr_debug("\nTCP_v4-Dowlink");
+
+		/*
+		 * Mark that this packet has been fast forwarded.
+		 */
+		skb->fast_forwarded = 1;
+
 		new_skb=skb;
 		new_skb->next =NULL;
 

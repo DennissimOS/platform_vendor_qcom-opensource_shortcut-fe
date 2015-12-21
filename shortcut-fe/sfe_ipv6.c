@@ -1566,11 +1566,6 @@ static int sfe_ipv6_recv_udp(struct sfe_ipv6 *si, struct sk_buff *skb, struct ne
 	prefetch(skb_shinfo(skb));
 
 	/*
-	 * Mark that this packet has been fast forwarded.
-	 */
-	skb->fast_forwarded = 1;
-
-	/*
 	 * Send the packet on its way.
 	 */
 	 
@@ -1580,6 +1575,12 @@ static int sfe_ipv6_recv_udp(struct sfe_ipv6 *si, struct sk_buff *skb, struct ne
 	if (cm->do_aggr )
 	{
 		pr_debug("\nUDP_v6-Downlink");
+
+		/*
+		 * Mark that this packet has been fast forwarded.
+		 */
+		skb->fast_forwarded = 1;
+
 		/* DownLink: skb pkt aggregation. */
 		new_skb=skb;
 		new_skb->next =NULL;
@@ -1887,7 +1888,7 @@ static int sfe_ipv6_recv_tcp(struct sfe_ipv6 *si, struct sk_buff *skb, struct ne
 	/*
 	 * Are we doing sequence number checking?
 	 */
-	if (likely(!(cm->flags & SFE_IPV6_CONNECTION_MATCH_FLAG_NO_SEQ_CHECK))) {
+	if (unlikely(!(cm->flags & SFE_IPV6_CONNECTION_MATCH_FLAG_NO_SEQ_CHECK))) {
 		uint32_t seq;
 		uint32_t ack;
 		uint32_t sack;
@@ -2160,11 +2161,6 @@ static int sfe_ipv6_recv_tcp(struct sfe_ipv6 *si, struct sk_buff *skb, struct ne
 	prefetch(skb_shinfo(skb));
 
 	/*
-	 * Mark that this packet has been fast forwarded.
-	 */
-	skb->fast_forwarded = 1;
-
-	/*
 	 * Send the packet on its way.
 	 */
 
@@ -2174,6 +2170,12 @@ static int sfe_ipv6_recv_tcp(struct sfe_ipv6 *si, struct sk_buff *skb, struct ne
 	if ( cm->do_aggr)
 	{
 		pr_debug("\nTCP_v6-Downlink");
+
+		/*
+		 * Mark that this packet has been fast forwarded.
+		 */
+		skb->fast_forwarded = 1;
+
 		/*DownLink: skb pkt aggregation*/
 		new_skb=skb;
 		new_skb->next =NULL;
@@ -2387,7 +2389,7 @@ static int sfe_ipv6_recv_icmp(struct sfe_ipv6 *si, struct sk_buff *skb, struct n
 		si->packets_not_forwarded++;
 		spin_unlock_bh(&si->lock);
 
-		DEBUG_TRACE("Unhandled embedded IP protocol: %u\n", icmp_iph->protocol);
+		DEBUG_TRACE("Unhandled embedded IP protocol: %u\n", next_hdr);
 		return 0;
 	}
 

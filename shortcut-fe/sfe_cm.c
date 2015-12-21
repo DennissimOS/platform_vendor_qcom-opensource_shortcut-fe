@@ -361,6 +361,8 @@ static unsigned int sfe_cm_post_routing(struct sk_buff *skb, int is_v4)
 	struct net_device *dest_br_dev = NULL;
 	struct nf_conntrack_tuple orig_tuple;
 	struct nf_conntrack_tuple reply_tuple;
+	struct net *net = NULL;
+	struct nf_tcp_net *tcp_net = NULL;
 
 	/*
 	 * Don't process broadcast or multicast packets.
@@ -406,6 +408,8 @@ static unsigned int sfe_cm_post_routing(struct sk_buff *skb, int is_v4)
 	}
 
 	dev_put(in);
+
+	net = dev_net(in);
 
 	/*
 	 * Don't process packets that aren't being tracked by conntrack.
@@ -509,7 +513,8 @@ static unsigned int sfe_cm_post_routing(struct sk_buff *skb, int is_v4)
 		sic.dest_td_max_window = ct->proto.tcp.seen[1].td_maxwin;
 		sic.dest_td_end = ct->proto.tcp.seen[1].td_end;
 		sic.dest_td_max_end = ct->proto.tcp.seen[1].td_maxend;
-		if (nf_ct_tcp_no_window_check
+		tcp_net = &net->ct.nf_ct_proto.tcp;
+		if (tcp_net->tcp_be_liberal
 		    || (ct->proto.tcp.seen[0].flags & IP_CT_TCP_FLAG_BE_LIBERAL)
 		    || (ct->proto.tcp.seen[1].flags & IP_CT_TCP_FLAG_BE_LIBERAL)) {
 			sic.flags |= SFE_CREATE_FLAG_NO_SEQ_CHECK;
