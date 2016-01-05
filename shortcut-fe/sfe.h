@@ -27,7 +27,7 @@
  */
 #define SFE_HOOK_ABOVE_BRIDGE 0
 #define MAX_INTF_LEN 50
-
+#define SFE_MAX_CMD_LEN 100
 
 #ifndef SFE_SUPPORT_IPV6
 #define SFE_SUPPORT_IPV6
