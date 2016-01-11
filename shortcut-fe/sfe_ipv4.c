@@ -1483,7 +1483,7 @@ static int sfe_ipv4_recv_udp(struct sfe_ipv4 *si, struct sk_buff *skb, struct ne
 				 * For the simple case we write this really fast.
 				 */
 				if (cm->expand_head)
-					pskb_expand_head(skb, SKB_DATA_ALIGN(ETH_HLEN), 0,
+					pskb_expand_head(skb, ETH_HLEN, 0,
 							 GFP_ATOMIC);
 
 				struct sfe_ipv4_eth_hdr *eth = (struct sfe_ipv4_eth_hdr *)__skb_push(skb, ETH_HLEN);
@@ -1497,6 +1497,8 @@ static int sfe_ipv4_recv_udp(struct sfe_ipv4 *si, struct sk_buff *skb, struct ne
 			}
 		}
 	}
+
+#ifdef SFE_CONFIG_MARK
 	/*
 	 * Mark outgoing packet.
 	 */
@@ -1504,6 +1506,7 @@ static int sfe_ipv4_recv_udp(struct sfe_ipv4 *si, struct sk_buff *skb, struct ne
 	if (skb->mark) {
 		DEBUG_TRACE("SKB MARK is NON ZERO %x\n", skb->mark);
 	}
+#endif
 
 	si->packets_forwarded++;
 	spin_unlock_bh(&si->lock);
@@ -2095,7 +2098,7 @@ static int sfe_ipv4_recv_tcp(struct sfe_ipv4 *si, struct sk_buff *skb, struct ne
 				 * For the simple case we write this really fast.
 				 */
 				if (cm->expand_head)
-					pskb_expand_head(skb, SKB_DATA_ALIGN(ETH_HLEN), 0,
+					pskb_expand_head(skb, ETH_HLEN, 0,
 							 GFP_ATOMIC);
 
 				struct sfe_ipv4_eth_hdr *eth = (struct sfe_ipv4_eth_hdr *)__skb_push(skb, ETH_HLEN);
@@ -2109,6 +2112,8 @@ static int sfe_ipv4_recv_tcp(struct sfe_ipv4 *si, struct sk_buff *skb, struct ne
 			}
 		}
 	}
+
+#ifdef SFE_CONFIG_MARK
 	/*
 	 * Mark outgoing packet
 	 */
@@ -2116,6 +2121,7 @@ static int sfe_ipv4_recv_tcp(struct sfe_ipv4 *si, struct sk_buff *skb, struct ne
 	if (skb->mark) {
 		DEBUG_TRACE("SKB MARK is NON ZERO %x\n", skb->mark);
 	}
+#endif
 
 	si->packets_forwarded++;
 	spin_unlock_bh(&si->lock);
@@ -2436,39 +2442,20 @@ int sfe_ipv4_recv(struct net_device *dev, struct sk_buff *skb)
 	 */
 	iph = (struct sfe_ipv4_ip_hdr *)skb->data;
 	tot_len = ntohs(iph->tot_len);
-	if (unlikely(tot_len < sizeof(struct sfe_ipv4_ip_hdr))) {
+	if (unlikely((tot_len < sizeof(struct sfe_ipv4_ip_hdr))
+			|| (iph->version != 4) || (tot_len > len))) {
 		spin_lock_bh(&si->lock);
-		si->exception_events[SFE_IPV4_EXCEPTION_EVENT_BAD_TOTAL_LENGTH]++;
+		if (iph->version != 4)
+			si->exception_events[SFE_IPV4_EXCEPTION_EVENT_NON_V4]++;
+		else if (tot_len > len)
+			si->exception_events[SFE_IPV4_EXCEPTION_EVENT_DATAGRAM_INCOMPLETE]++;
+		else
+			si->exception_events[SFE_IPV4_EXCEPTION_EVENT_BAD_TOTAL_LENGTH]++;
 		si->packets_not_forwarded++;
 		spin_unlock_bh(&si->lock);
 
-		DEBUG_TRACE("tot_len: %u is too short\n", tot_len);
-		return 0;
-	}
-
-	/*
-	 * Is our IP version wrong?
-	 */
-	if (unlikely(iph->version != 4)) {
-		spin_lock_bh(&si->lock);
-		si->exception_events[SFE_IPV4_EXCEPTION_EVENT_NON_V4]++;
-		si->packets_not_forwarded++;
-		spin_unlock_bh(&si->lock);
-
-		DEBUG_TRACE("IP version: %u\n", iph->version);
-		return 0;
-	}
-
-	/*
-	 * Does our datagram fit inside the skb?
-	 */
-	if (unlikely(tot_len > len)) {
-		spin_lock_bh(&si->lock);
-		si->exception_events[SFE_IPV4_EXCEPTION_EVENT_DATAGRAM_INCOMPLETE]++;
-		si->packets_not_forwarded++;
-		spin_unlock_bh(&si->lock);
-
-		DEBUG_TRACE("tot_len: %u, exceeds len: %u\n", tot_len, len);
+		DEBUG_TRACE("One of tot_len: %u, len: %u, header: %u not valid\n",
+			tot_len, len, iph->version);
 		return 0;
 	}
 
@@ -2512,12 +2499,13 @@ int sfe_ipv4_recv(struct net_device *dev, struct sk_buff *skb)
 	}
 
 	protocol = iph->protocol;
-	if (IPPROTO_UDP == protocol) {
-		return sfe_ipv4_recv_udp(si, skb, dev, len, iph, ihl, flush_on_find);
-	}
 
 	if (IPPROTO_TCP == protocol) {
 		return sfe_ipv4_recv_tcp(si, skb, dev, len, iph, ihl, flush_on_find);
+	}
+
+	if (IPPROTO_UDP == protocol) {
+		return sfe_ipv4_recv_udp(si, skb, dev, len, iph, ihl, flush_on_find);
 	}
 
 	if (IPPROTO_ICMP == protocol) {
@@ -2841,22 +2829,29 @@ int sfe_ipv4_create_rule(struct sfe_connection_create *sic)
 	}
 
 	/* If the packet destination is wlan0 or wlan1, do aggregation*/
-	#define INTF_LEN 5
-	if ((strncmp(dest_dev->name, "wlan0", INTF_LEN)  == 0)) 
+	if ((strncmp(dest_dev->name, WLAN_INTF1, WLAN_INTF_LEN)  == 0)) 
 	{
 		original_cm->do_aggr = true;
 		original_cm->index = SFE_WLAN_LINK_INDEX0;
 		reply_cm->do_aggr = false;
 		reply_cm->index = SFE_WLAN_LINK_INDEX_NONE;
+		/* For LAN-LAN communication make sure enough headroom is available. */
 		original_cm->expand_head = true;
 		reply_cm->expand_head = true;
 	}
-	else if ((strncmp(dest_dev->name, "wlan1", INTF_LEN)  == 0 ))
+	else if ((strncmp(dest_dev->name, WLAN_INTF2, WLAN_INTF_LEN)  == 0 ))
 	{
 		original_cm->do_aggr = true;
 		original_cm->index = SFE_WLAN_LINK_INDEX1;
 		reply_cm->do_aggr = false;
 		reply_cm->index = SFE_WLAN_LINK_INDEX_NONE;
+		/* For LAN-LAN communication make sure enough headroom is available. */
+		original_cm->expand_head = true;
+		reply_cm->expand_head = true;
+	}
+	else if ((strncmp(dest_dev->name, ECM_INTF, ECM_INTF_LEN)  == 0 ))
+	{
+		/* Align the packets before giving to USB driver. */
 		original_cm->expand_head = true;
 		reply_cm->expand_head = true;
 	}
