@@ -3754,6 +3754,8 @@ static void __exit sfe_ipv4_exit(void)
 
 	DEBUG_INFO("SFE IPv4 exit\n");
 
+	unregister_sysctl_table(si->proc.debug_ctl_header);
+
 	/*
 	 * Destroy all connections.
 	 */
