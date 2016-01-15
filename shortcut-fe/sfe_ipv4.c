@@ -1267,6 +1267,7 @@ static int sfe_ipv4_recv_udp(struct sfe_ipv4 *si, struct sk_buff *skb, struct ne
 	int k;
 	const struct net_device_ops *ops;
 	int queue_index = 0;
+        struct sfe_ipv4_connection *c;
 	/*
 	 * Is our packet too short to contain a valid UDP header?
 	 */
@@ -1469,7 +1470,7 @@ static int sfe_ipv4_recv_udp(struct sfe_ipv4 *si, struct sk_buff *skb, struct ne
 	xmit_dev = cm->xmit_dev;
 	skb->dev = xmit_dev;
 
-	struct sfe_ipv4_connection *c = cm->connection;
+	c = cm->connection;
 	if (likely(c->use_destMac || cm->addEthMAC)) {
 		/*
 		 * Check to see if we need to write a header.
@@ -1599,8 +1600,6 @@ static int sfe_ipv4_recv_udp(struct sfe_ipv4 *si, struct sk_buff *skb, struct ne
  *	Parse TCP SACK option and update ack according
  */
 static bool sfe_ipv4_process_tcp_option_sack(const struct sfe_ipv4_tcp_hdr *th, const uint32_t data_offs,
-					     uint32_t *ack) __attribute__((always_inline));
-static bool sfe_ipv4_process_tcp_option_sack(const struct sfe_ipv4_tcp_hdr *th, const uint32_t data_offs,
 					     uint32_t *ack)
 {
 	uint32_t length = sizeof(struct sfe_ipv4_tcp_hdr);
@@ -1697,6 +1696,7 @@ static int sfe_ipv4_recv_tcp(struct sfe_ipv4 *si, struct sk_buff *skb, struct ne
 	int k;
 	const struct net_device_ops *ops;
 	int queue_index = 0;
+        struct sfe_ipv4_connection *c;
 
 	/*
 	 * Is our packet too short to contain a valid UDP header?
@@ -2084,7 +2084,7 @@ static int sfe_ipv4_recv_tcp(struct sfe_ipv4 *si, struct sk_buff *skb, struct ne
 	xmit_dev = cm->xmit_dev;
 	skb->dev = xmit_dev;
 
-	struct sfe_ipv4_connection *c = cm->connection;
+	c = cm->connection;
 	if (likely(c->use_destMac || cm->addEthMAC)) {
 		/*
 		 * Check to see if we need to write a header.
@@ -3584,7 +3584,7 @@ static struct file_operations sfe_ipv4_debug_dev_fops = {
 	.release = sfe_ipv4_debug_dev_release
 };
 
-static int read_from_v4_iface_proc_entry(struct file *filp,char *buf,size_t count,loff_t *offp ) 
+static ssize_t read_from_v4_iface_proc_entry(struct file *filp,char *buf,size_t count,loff_t *offp )
 {
 	struct sfe_ipv4 *si = &__si;
 
@@ -3602,7 +3602,7 @@ static int read_from_v4_iface_proc_entry(struct file *filp,char *buf,size_t coun
 	return si->iface_length;
 }
 
-static int write_to_v4_iface_proc_entry(struct file *file,const char *buf,int count,void *data )
+static ssize_t write_to_v4_iface_proc_entry(struct file *file,const char *buf,size_t count,loff_t *data )
 {
 	struct sfe_ipv4 *si = &__si;
 

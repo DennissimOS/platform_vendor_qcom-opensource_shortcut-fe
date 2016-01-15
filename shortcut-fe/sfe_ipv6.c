@@ -679,10 +679,6 @@ static inline unsigned int sfe_ipv6_get_connection_match_hash(struct net_device 
 static struct sfe_ipv6_connection_match *
 sfe_ipv6_find_connection_match(struct sfe_ipv6 *si, struct net_device *dev, uint8_t protocol,
 					struct sfe_ipv6_addr *src_ip, __be16 src_port,
-					struct sfe_ipv6_addr *dest_ip, __be16 dest_port) __attribute__((always_inline));
-static struct sfe_ipv6_connection_match *
-sfe_ipv6_find_connection_match(struct sfe_ipv6 *si, struct net_device *dev, uint8_t protocol,
-					struct sfe_ipv6_addr *src_ip, __be16 src_port,
 					struct sfe_ipv6_addr *dest_ip, __be16 dest_port)
 {
 	struct sfe_ipv6_connection_match *cm;
@@ -1336,6 +1332,7 @@ static int sfe_ipv6_recv_udp(struct sfe_ipv6 *si, struct sk_buff *skb, struct ne
 	struct sk_buff *new_skb,*temp ;
 	const struct net_device_ops *ops;
 	int queue_index = 0;
+        struct sfe_ipv6_connection *c;
 
 	/*
 	 * Is our packet too short to contain a valid UDP header?
@@ -1518,11 +1515,10 @@ static int sfe_ipv6_recv_udp(struct sfe_ipv6 *si, struct sk_buff *skb, struct ne
 
 	xmit_dev = cm->xmit_dev;
 	skb->dev = xmit_dev;
-
+        c = cm->connection;
 	/*
 	 * Check to see if we need to write a header.
 	 */
-	struct sfe_ipv6_connection *c = cm->connection;
 	if (likely(c->use_destMac || cm->addEthMAC)) {
 		if (likely(cm->flags & SFE_IPV6_CONNECTION_MATCH_FLAG_WRITE_L2_HDR)) {
 			if (unlikely(!(cm->flags & SFE_IPV6_CONNECTION_MATCH_FLAG_WRITE_FAST_ETH_HDR))) {
@@ -1649,8 +1645,6 @@ static int sfe_ipv6_recv_udp(struct sfe_ipv6 *si, struct sk_buff *skb, struct ne
  *	Parse TCP SACK option and update ack according
  */
 static bool sfe_ipv6_process_tcp_option_sack(const struct sfe_ipv6_tcp_hdr *th, const uint32_t data_offs,
-					     uint32_t *ack) __attribute__((always_inline));
-static bool sfe_ipv6_process_tcp_option_sack(const struct sfe_ipv6_tcp_hdr *th, const uint32_t data_offs,
 					     uint32_t *ack)
 {
 	uint32_t length = sizeof(struct sfe_ipv6_tcp_hdr);
@@ -1745,6 +1739,7 @@ static int sfe_ipv6_recv_tcp(struct sfe_ipv6 *si, struct sk_buff *skb, struct ne
 	struct sk_buff *new_skb ;
 	const struct net_device_ops *ops;
 	int queue_index = 0;
+        struct sfe_ipv6_connection *c;
 
 	/*
 	 * Is our packet too short to contain a valid UDP header?
@@ -2116,11 +2111,10 @@ static int sfe_ipv6_recv_tcp(struct sfe_ipv6 *si, struct sk_buff *skb, struct ne
 
 	xmit_dev = cm->xmit_dev;
 	skb->dev = xmit_dev;
-
+        c = cm->connection;
 	/*
 	 * Check to see if we need to write a header.
 	 */
-	struct sfe_ipv6_connection *c = cm->connection;
 	if (likely(c->use_destMac || cm->addEthMAC)) {
 		if (likely(cm->flags & SFE_IPV6_CONNECTION_MATCH_FLAG_WRITE_L2_HDR)) {
 			if (unlikely(!(cm->flags & SFE_IPV6_CONNECTION_MATCH_FLAG_WRITE_FAST_ETH_HDR))) {
@@ -3639,7 +3633,7 @@ static int read_from_v6_iface_proc_entry(struct file *filp,char *buf,size_t coun
 	return si->iface_length;
 }
 
-static int write_to_v6_iface_proc_entry(struct file *file,const char *buf,int count,void *data )
+static ssize_t write_to_v6_iface_proc_entry(struct file *file,const char *buf,size_t count,loff_t *data )
 {
 	struct sfe_ipv6 *si = &__si6;
 
