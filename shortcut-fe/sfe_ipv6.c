@@ -27,7 +27,7 @@
 #include "sfe_cm.h"
 
 #define PKT_THRESHOLD 10
-#define TIMEOUT 10
+#define TIMEOUT 100
 
 struct sfe_wlan_aggr_params aggr_params[MAX_WLAN_INDEX];
 
@@ -2873,8 +2873,8 @@ int sfe_ipv6_create_rule(struct sfe_connection_create *sic)
 		reply_cm->do_aggr = false;
 		reply_cm->index = SFE_WLAN_LINK_INDEX_NONE;
 		/* For LAN-LAN communication make sure enough headroom is available. */
-		original_cm->expand_head = true;
-		reply_cm->expand_head = true;
+		original_cm->expand_head = false;
+		reply_cm->expand_head = false;
 	}
 	else if ((strncmp(dest_dev->name, WLAN_INTF2, WLAN_INTF_LEN)  == 0 ))
 	{
@@ -2883,8 +2883,8 @@ int sfe_ipv6_create_rule(struct sfe_connection_create *sic)
 		reply_cm->do_aggr = false;
 		reply_cm->index = SFE_WLAN_LINK_INDEX_NONE;
 		/* For LAN-LAN communication make sure enough headroom is available. */
-		original_cm->expand_head = true;
-		reply_cm->expand_head = true;
+		original_cm->expand_head = false;
+		reply_cm->expand_head = false;
 	}
 	else if ((strncmp(dest_dev->name, ECM_INTF, ECM_INTF_LEN)  == 0 ))
 	{
