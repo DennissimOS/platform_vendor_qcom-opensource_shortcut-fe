@@ -1115,6 +1115,11 @@ static void __exit sfe_cm_exit(void)
 	RCU_INIT_POINTER(athrs_fast_nat_recv, NULL);
 
 	/*
+	 * Unregister the delete conntrack callback.
+	 */
+	RCU_INIT_POINTER(delete_sfe_entry, NULL);
+
+	/*
 	 * Wait for all callbacks to complete.
 	 */
 	rcu_barrier();
@@ -1125,10 +1130,6 @@ static void __exit sfe_cm_exit(void)
 	sfe_ipv4_destroy_all_rules_for_dev(NULL);
 	sfe_ipv6_destroy_all_rules_for_dev(NULL);
 
-#ifdef CONFIG_NF_CONNTRACK_EVENTS
-	nf_conntrack_unregister_notifier(&init_net, &sfe_cm_conntrack_notifier);
-
-#endif
 	nf_unregister_hooks(sfe_cm_ops_post_routing, ARRAY_SIZE(sfe_cm_ops_post_routing));
 
 	unregister_inet6addr_notifier(&sc->inet6_notifier);

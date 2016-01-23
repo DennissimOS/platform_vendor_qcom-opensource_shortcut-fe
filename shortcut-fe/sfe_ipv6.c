@@ -3785,6 +3785,8 @@ static void __exit sfe_ipv6_exit(void)
 {
 	struct sfe_ipv6 *si = &__si6;
 
+	unregister_sysctl_table(si->proc1.debug_ctl_header);
+
 	DEBUG_INFO("SFE IPv6 exit\n");
 
 	/*
