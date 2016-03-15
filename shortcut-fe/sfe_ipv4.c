@@ -27,11 +27,13 @@
 #include "sfe_cm.h"
 #define PKT_THRESHOLD 10
 #define TIMEOUT 100
+#define AGGR_ON 1
 
 struct sfe_wlan_aggr_params aggr_params[MAX_WLAN_INDEX];
 
 int var_timeout = TIMEOUT;
 int var_thresh = PKT_THRESHOLD;
+int aggr_on = AGGR_ON;
 int threshold_count;
 int timeout_count;
 
@@ -56,6 +58,7 @@ static struct ctl_table sfe_sysctl_debug[] =
 {
     XDBG_ADD_PROC_ENTRY(XDBG_TIMER_STEP_DBG, "timeout_value", &var_timeout),
     XDBG_ADD_PROC_ENTRY(XDBG_THRESHOLD_STEP_DBG, "threshold", &var_thresh),
+    XDBG_ADD_PROC_ENTRY(XDBG_THRESHOLD_STEP_DBG, "aggr_on", &aggr_on),
     XDBG_ADD_PROC_ENTRY(XDBG_THRESHOLD_STEP_DBG, "threshold_count", &threshold_count),
     XDBG_ADD_PROC_ENTRY(XDBG_THRESHOLD_STEP_DBG, "timeout_count", &timeout_count),
     {0, },
@@ -1525,7 +1528,7 @@ static int sfe_ipv4_recv_udp(struct sfe_ipv4 *si, struct sk_buff *skb, struct ne
 	/*
 	 * do _aggr is set to true in case we need aggregation to happen
 	 */
-	if (cm->do_aggr )
+	if (cm->do_aggr)
 	{
 		pr_debug("\nUDP_v4-Dowlink");
 
@@ -2831,7 +2834,7 @@ int sfe_ipv4_create_rule(struct sfe_connection_create *sic)
 	/* If the packet destination is wlan0 or wlan1, do aggregation*/
 	if ((strncmp(dest_dev->name, WLAN_INTF1, WLAN_INTF_LEN)  == 0)) 
 	{
-		original_cm->do_aggr = true;
+		original_cm->do_aggr = aggr_on;
 		original_cm->index = SFE_WLAN_LINK_INDEX0;
 		reply_cm->do_aggr = false;
 		reply_cm->index = SFE_WLAN_LINK_INDEX_NONE;
@@ -2841,7 +2844,7 @@ int sfe_ipv4_create_rule(struct sfe_connection_create *sic)
 	}
 	else if ((strncmp(dest_dev->name, WLAN_INTF2, WLAN_INTF_LEN)  == 0 ))
 	{
-		original_cm->do_aggr = true;
+		original_cm->do_aggr = aggr_on;
 		original_cm->index = SFE_WLAN_LINK_INDEX1;
 		reply_cm->do_aggr = false;
 		reply_cm->index = SFE_WLAN_LINK_INDEX_NONE;
